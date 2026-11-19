@@ -68,6 +68,7 @@ techniques:
   T1059.013: [execution]
   T1069: [discovery]
   T1070: [stealth]
+  T1070.002: [stealth]
   T1070.003: [stealth]
   T1070.004: [stealth]
   T1070.006: [stealth]

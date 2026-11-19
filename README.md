@@ -660,8 +660,15 @@ Current coverage is tuned for Linux intrusion triage:
 - Evidence handling: plain text plus gzip, bzip2, and xz compressed rotations;
   direct copied log directories, loose log files, and bounded read-only SQLite
   log extraction;
-  native systemd journal and wtmp/btmp/lastlog databases remain inventoried as
-  explicit unsupported sources instead of disappearing from coverage
+  native systemd journal files (`*.journal`, regular and compact, with XZ, LZ4,
+  and Zstandard payloads) and native `wtmp`, `btmp`, `utmp`, and `lastlog`
+  databases from 32-bit-time and 64-bit-time glibc layouts in either byte order.
+  Zstandard journal fields need the optional `zstandard` package
+  (`pip install "tracequarry[journal]"`; bundled in the Windows portable build);
+  without it the affected fields are counted in a parser-coverage event
+- Log integrity: zero-filled login records, timestamps that run backwards in
+  append-only login databases, truncated login databases, and journal files with
+  damaged objects or fewer recoverable entries than the header declares
 
 - Authentication: SSH brute force, invalid users, successful login after repeated
   failures, root logins, login-history exports, account lock/unlock events, and

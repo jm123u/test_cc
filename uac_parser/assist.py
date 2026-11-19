@@ -12,7 +12,7 @@ from uac_parser.resources import resource_file
 from uac_parser.timeline.event import TimelineEvent
 
 SOURCE_GROUPS = {
-    "authentication": {"auth_log", "login_history", "auditd"},
+    "authentication": {"auth_log", "login_history", "login_binary", "auditd"},
     "web": {"web_log"},
     "execution": {"auditd", "shell_history", "ps_output"},
     "process": {"ps_output", "auditd"},

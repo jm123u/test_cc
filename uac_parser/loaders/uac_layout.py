@@ -78,7 +78,16 @@ PATTERNS = {
         "*wtmp.txt",
         "*btmp.txt",
     ),
-    "login_binary": ("var/log/wtmp", "var/log/btmp", "var/log/lastlog"),
+    "login_binary": (
+        "wtmp",
+        "wtmp.*",
+        "wtmp-*",
+        "btmp",
+        "btmp.*",
+        "btmp-*",
+        "lastlog",
+        "utmp",
+    ),
     "passwd": ("etc/passwd",),
     "shadow": ("etc/shadow",),
     "group": ("etc/group",),
@@ -103,6 +112,9 @@ PATTERNS = {
     "netstat_output": ("*netstat_-anp*", "*netstat_anp*", "*netstat_-tlnp*"),
     "ps_output": ("*ps_auxwww*", "*ps_-ef*", "*ps_aux*"),
 }
+
+
+LOGIN_BINARY_TEXT_SUFFIXES = (".txt", ".log", ".out", ".json", ".csv", ".md5", ".sha1")
 
 
 def discover_sources(root: Path) -> list[SourceFile]:
@@ -284,6 +296,8 @@ def _valid_source(source_type: str, relative: str) -> bool:
         return "journal" in name.lower() and not name.endswith(
             (".journal", ".journal~")
         )
+    if source_type == "login_binary":
+        return not name.lower().endswith(LOGIN_BINARY_TEXT_SUFFIXES)
     if source_type == "ss_output":
         return "ss_" in name.lower() or "ss-" in name.lower()
     if source_type == "netstat_output":

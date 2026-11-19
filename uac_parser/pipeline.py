@@ -52,11 +52,13 @@ from uac_parser.parsers import (
     auth,
     bodyfile,
     journal,
+    journal_binary,
     persistence,
     privilege,
     sqlite_log,
     ssh,
     syslog,
+    utmp,
 )
 from uac_parser.parsers.account_diff import diff_accounts
 from uac_parser.parsers.common import UnsupportedCompressionError
@@ -94,9 +96,11 @@ PARSER_DISPATCH = {
     "package_log": parse_package_log,
     "systemd": parse_systemd,
     "journal_text": journal.parse,
+    "journal_binary": journal_binary.parse,
     "systemd_unit": persistence.parse_systemd_unit,
     "web_log": parse_web_log,
     "login_history": parse_last_output,
+    "login_binary": utmp.parse,
     "passwd": accounts.parse_passwd,
     "shadow": accounts.parse_shadow,
     "group": accounts.parse_group,
@@ -1900,16 +1904,7 @@ def _sync_evidence_coverage(
 
 
 def _unsupported_source_reason(source_type: str) -> str:
-    return {
-        "journal_binary": (
-            "Native systemd journal databases require an external journal export; "
-            "TraceQuarry parses journalctl text exports without modifying the evidence."
-        ),
-        "login_binary": (
-            "Native wtmp, btmp, and lastlog databases require a platform-aware binary "
-            "decoder; collect corresponding last/lastb text output for this release."
-        ),
-    }.get(source_type, f"No parser is registered for source type {source_type}.")
+    return f"No parser is registered for source type {source_type}."
 
 
 def _file_sha256(path: Path) -> str:

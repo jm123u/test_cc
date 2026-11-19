@@ -41,7 +41,7 @@ class ForensicCoverageTests(unittest.TestCase):
 
         self.assertTrue(any(source.relative == "auth.log.large" for source in sources))
 
-    def test_native_binary_logs_are_accounted_for_as_unsupported(self) -> None:
+    def test_unreadable_native_journal_is_reported_not_dropped(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "collection"
             (root / "var/log/journal/id").mkdir(parents=True)
@@ -56,14 +56,9 @@ class ForensicCoverageTests(unittest.TestCase):
             for source in source_index["sources"]
             if source["source_type"] == "journal_binary"
         )
-        inventory = next(
-            item
-            for item in source_index["evidence_inventory"]
-            if item["relative"].endswith("system.journal")
-        )
-        self.assertEqual(result.errors, 0)
-        self.assertEqual(journal["parser_status"], "unsupported")
-        self.assertEqual(inventory["coverage_status"], "unsupported")
+        self.assertEqual(result.errors, 1)
+        self.assertEqual(journal["parser_status"], "error")
+        self.assertIn("Not a systemd journal file", journal["parser_error"])
 
     def test_optional_compression_is_reported_as_unsupported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -34,7 +34,9 @@ NUPKG_URL = (
     "https://api.nuget.org/v3-flatcontainer/python/"
     f"{PYTHON_VERSION}/python.{PYTHON_VERSION}.nupkg"
 )
-EXTRA_WHEELS = ("tzdata==2025.2",)  # Windows has no system IANA time-zone database.
+# tzdata: Windows has no system IANA time-zone database.
+# zstandard: Zstandard-compressed fields in native systemd journal files.
+EXTRA_WHEELS = ("tzdata==2025.2", "zstandard==0.25.0")
 
 STDLIB_EXCLUDED_DIRS = {
     "__pycache__", "ensurepip", "idlelib", "lib2to3", "pydoc_data", "site-packages",

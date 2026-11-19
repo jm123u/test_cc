@@ -5,6 +5,20 @@ All notable TraceQuarry changes are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- Added a native systemd journal decoder for regular and compact `*.journal`
+  files with XZ, LZ4, and Zstandard payloads. Entries are recovered by walking
+  the object arena, so an unclean or partially damaged file still yields its
+  readable entries, and undecodable fields are reported in a coverage event.
+- Added a platform-aware decoder for native `wtmp`, `btmp`, `utmp`, and
+  `lastlog` databases covering 32-bit-time and 64-bit-time glibc layouts in
+  both byte orders, including compressed rotations.
+- Added login-database integrity findings for zero-filled records, timestamp
+  regressions, and truncated trailing records.
+- Added a self-contained Windows portable bundle build under
+  `packaging/windows`.
+
 ## [0.4.0-beta.2] - 2026-07-26
 
 ### Added

@@ -38,6 +38,8 @@ Issues = "https://github.com/Chill-Ethical-People/TraceQuarry/issues"
 Security = "https://github.com/Chill-Ethical-People/TraceQuarry/security/policy"
 
 [project.optional-dependencies]
+# Zstandard-compressed fields in native systemd journal files.
+journal = ["zstandard>=0.23,<1"]
 dev = [
     "bandit>=1.8,<2",
     "build>=1.2,<2",

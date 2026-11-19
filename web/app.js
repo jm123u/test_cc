@@ -1438,7 +1438,7 @@
     function renderCoverageReadiness(sourceTypes) {
       const available = new Set(sourceTypes);
       const groups = [
-        ['Authentication', ['auth_log', 'login_history']],
+        ['Authentication', ['auth_log', 'login_history', 'login_binary']],
         ['Audit', ['auditd']],
         ['Command history', ['shell_history']],
         ['Network state', ['ss_output', 'netstat_output']],
