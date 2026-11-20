@@ -224,6 +224,8 @@ class LoginBinaryParserTests(unittest.TestCase):
             for name in ("wtmp", "wtmp.1", "btmp", "lastlog"):
                 (root / "var/log" / name).write_bytes(b"".join(sample()))
             (root / "live_response/wtmp.txt").write_text("alice pts/0 203.0.113.7\n")
+            (root / "usr/bin").mkdir(parents=True)
+            (root / "usr/bin/lastlog").write_bytes(b"\x7fELF not a login database")
 
             sources = discover_sources(root)
 

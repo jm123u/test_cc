@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import stat
 import tarfile
@@ -16,6 +17,9 @@ MAX_ARCHIVE_MEMBERS = 100_000
 MAX_EXPANDED_BYTES = 8 * 1024 * 1024 * 1024
 MAX_SINGLE_MEMBER_BYTES = 1024 * 1024 * 1024
 MIN_EXTRACTION_FREE_BYTES = 512 * 1024 * 1024
+WINDOWS = os.name == "nt"
+WINDOWS_EXTENDED_PREFIX = "\\\\?\\"
+WINDOWS_INVALID_NAME_CHARS = frozenset('<>:"|?*')
 _EXTRACTION_CONDITION = threading.Condition()
 _EXTRACTION_RESERVATIONS: dict[int, int] = {}
 
@@ -49,6 +53,11 @@ def load_input(path: str, *, temp_parent: str | Path | None = None) -> LoadedCas
         scratch_root = Path(temp_parent).expanduser().resolve()
         scratch_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         parent = str(scratch_root)
+    if WINDOWS:
+        # Linux evidence trees routinely exceed the 260-character Windows path
+        # limit once extracted, so the scratch directory uses an extended-length
+        # path. Every path derived from it, including cleanup, inherits the prefix.
+        parent = extended_length_path(parent or tempfile.gettempdir())
     temp = tempfile.TemporaryDirectory(prefix=".uac_parser_", dir=parent)
     dest = Path(temp.name).resolve()
     reservation: tuple[int, int] | None = None
@@ -60,14 +69,14 @@ def load_input(path: str, *, temp_parent: str | Path | None = None) -> LoadedCas
                 expanded = _validate_members(tar_members)
                 archive_exclusions = _tar_exclusions(tar_members)
                 reservation = _reserve_extraction(dest, expanded)
-                _extract_tar(archive, tar_members, dest)
+                _extract_tar(archive, tar_members, dest, archive_exclusions)
         elif zipfile.is_zipfile(source):
             with zipfile.ZipFile(source) as archive:
                 zip_members = archive.infolist()
                 expanded = _validate_members(zip_members)
                 archive_exclusions = _zip_exclusions(archive, zip_members)
                 reservation = _reserve_extraction(dest, expanded)
-                _extract_zip(archive, zip_members, dest)
+                _extract_zip(archive, zip_members, dest, archive_exclusions)
         else:
             if _has_archive_name(source):
                 raise ValueError(
@@ -161,48 +170,135 @@ def _has_archive_name(path: Path) -> bool:
     return lowered.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".zip"))
 
 
-def _target_path(dest: Path, member_name: str) -> Path:
+def extended_length_path(path: str) -> str:
+    """Return the Windows extended-length form of an absolute path."""
+    absolute = os.path.abspath(path)
+    if absolute.startswith(WINDOWS_EXTENDED_PREFIX):
+        return absolute
+    if absolute.startswith("\\\\"):
+        return WINDOWS_EXTENDED_PREFIX + "UNC\\" + absolute[2:]
+    return WINDOWS_EXTENDED_PREFIX + absolute
+
+
+class _MemberNamer:
+    """Map archive member names to names the local filesystem can hold.
+
+    On Windows, characters that NTFS rejects are percent-encoded (a colon would
+    otherwise silently create an alternate data stream), and names that differ
+    only by case are kept apart instead of overwriting each other. Other
+    platforms use the member name unchanged.
+    """
+
+    def __init__(self, *, windows: bool = WINDOWS) -> None:
+        self.windows = windows
+        self._assigned: dict[tuple[str, str], str] = {}
+        self._taken: dict[str, set[str]] = {}
+
+    def local_name(self, member_name: str) -> str:
+        normalized = member_name.replace("\\", "/")
+        if not self.windows:
+            return normalized
+        parent = ""
+        parts = []
+        for part in normalized.split("/"):
+            if part in {"", ".", ".."}:
+                parts.append(part)
+                continue
+            key = (parent, part)
+            name = self._assigned.get(key)
+            if name is None:
+                name = "".join(
+                    f"%{ord(char):02X}"
+                    if char in WINDOWS_INVALID_NAME_CHARS or ord(char) < 32
+                    else char
+                    for char in part
+                )
+                taken = self._taken.setdefault(parent, set())
+                candidate, counter = name, 1
+                while candidate.lower() in taken:
+                    candidate = f"{name}.~case{counter}"
+                    counter += 1
+                name = candidate
+                taken.add(name.lower())
+                self._assigned[key] = name
+            parts.append(name)
+            parent = f"{parent}/{name.lower()}"
+        return "/".join(parts)
+
+
+def _target_path(dest: Path, member_name: str, local_name: str | None = None) -> Path:
     normalized = member_name.replace("\\", "/")
     if normalized.startswith("/"):
         raise ValueError(f"Archive member escapes extraction root: {member_name}")
-    target = (dest / normalized).resolve()
+    target = (dest / (local_name or normalized)).resolve()
     if not target.is_relative_to(dest):
         raise ValueError(f"Archive member escapes extraction root: {member_name}")
     return target
 
 
+def _extraction_failure(member_name: str, size: int, error: OSError) -> dict[str, Any]:
+    return {
+        "relative": member_name.replace("\\", "/"),
+        "reason": "archive_member_extraction_failed",
+        "byte_size": size,
+        "error": f"{type(error).__name__}: {error.strerror or error}",
+    }
+
+
 def _extract_tar(
-    archive: tarfile.TarFile, members: Sequence[tarfile.TarInfo], dest: Path
+    archive: tarfile.TarFile,
+    members: Sequence[tarfile.TarInfo],
+    dest: Path,
+    exclusions: list[dict[str, Any]] | None = None,
 ) -> None:
+    namer = _MemberNamer()
     for member in members:
-        target = _target_path(dest, member.name)
-        if member.isdir():
-            target.mkdir(parents=True, exist_ok=True)
-            continue
-        if not member.isfile():
-            continue
-        source = archive.extractfile(member)
-        if source is None:
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with source, target.open("wb") as handle:
-            shutil.copyfileobj(source, handle)
+        target = _target_path(dest, member.name, namer.local_name(member.name))
+        try:
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                continue
+            source = archive.extractfile(member)
+            if source is None:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with source, target.open("wb") as handle:
+                shutil.copyfileobj(source, handle)
+        except OSError as exc:
+            # One member the local filesystem cannot hold must not discard the
+            # rest of the collection; it is reported with the other exclusions.
+            if exclusions is None:
+                raise
+            exclusions.append(_extraction_failure(member.name, member.size, exc))
 
 
 def _extract_zip(
-    archive: zipfile.ZipFile, members: Sequence[zipfile.ZipInfo], dest: Path
+    archive: zipfile.ZipFile,
+    members: Sequence[zipfile.ZipInfo],
+    dest: Path,
+    exclusions: list[dict[str, Any]] | None = None,
 ) -> None:
+    namer = _MemberNamer()
     for member in members:
-        target = _target_path(dest, member.filename)
-        if member.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-            continue
-        unix_mode = member.external_attr >> 16
-        if stat.S_ISLNK(unix_mode):
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with archive.open(member) as source, target.open("wb") as handle:
-            shutil.copyfileobj(source, handle)
+        target = _target_path(dest, member.filename, namer.local_name(member.filename))
+        try:
+            if member.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            unix_mode = member.external_attr >> 16
+            if stat.S_ISLNK(unix_mode):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source, target.open("wb") as handle:
+                shutil.copyfileobj(source, handle)
+        except OSError as exc:
+            if exclusions is None:
+                raise
+            exclusions.append(
+                _extraction_failure(member.filename, member.file_size, exc)
+            )
 
 
 def _validate_members(members: Sequence[object]) -> int:

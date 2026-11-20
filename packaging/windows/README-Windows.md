@@ -58,6 +58,22 @@ TraceQuarry.exe --help
 - The standard library and the application are precompiled to bytecode for a
   faster start and fewer files.
 
+## Linux evidence on a Windows disk
+
+Extracted Linux collections do not always fit Windows file-name rules, so the
+loader adapts them inside its temporary working copy. The original archive is
+never changed, and hashes are still computed from the file contents.
+
+- Paths longer than 260 characters are handled with extended-length paths.
+- Characters Windows rejects in names (`< > : " | ? *` and control characters)
+  are written percent-encoded, so `pci-0000:00:1f.2` appears as
+  `pci-0000%3A00%3A1f.2` in source paths.
+- Names that differ only by case get a `.~caseN` suffix instead of overwriting
+  each other.
+- A file that still cannot be written is listed under archive exclusions with
+  the reason `archive_member_extraction_failed`; the rest of the collection is
+  analysed.
+
 ## Security boundary
 
 Same as upstream: TraceQuarry is a single-user, loopback-only tool with no

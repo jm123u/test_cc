@@ -215,3 +215,120 @@ class ArchiveTests(unittest.TestCase):
                 {item["relative"] for item in exclusions},
                 {"._bodyfile.txt", "__MACOSX/bodyfile.txt"},
             )
+
+
+class WindowsExtractionTests(unittest.TestCase):
+    def test_extended_length_paths(self) -> None:
+        from unittest import mock
+
+        from uac_parser.loaders import archive as module
+
+        with mock.patch.object(module.os.path, "abspath", lambda value: value):
+            self.assertEqual(
+                module.extended_length_path("C:\\cases\\out"), "\\\\?\\C:\\cases\\out"
+            )
+            self.assertEqual(
+                module.extended_length_path("\\\\?\\C:\\cases"), "\\\\?\\C:\\cases"
+            )
+            self.assertEqual(
+                module.extended_length_path("\\\\nas\\share\\x"),
+                "\\\\?\\UNC\\nas\\share\\x",
+            )
+
+    def test_member_names_are_made_safe_for_windows_only(self) -> None:
+        from uac_parser.loaders.archive import _MemberNamer
+
+        name = "[root]/dev/disk/by-path/pci-0000:00:1f.2-ata-1"
+        self.assertEqual(_MemberNamer(windows=False).local_name(name), name)
+        namer = _MemberNamer(windows=True)
+        self.assertEqual(
+            namer.local_name(name), "[root]/dev/disk/by-path/pci-0000%3A00%3A1f.2-ata-1"
+        )
+        self.assertEqual(namer.local_name("a/what?*.txt"), "a/what%3F%2A.txt")
+        self.assertEqual(namer.local_name("a/tab\tname"), "a/tab%09name")
+        # Stable for repeated lookups, and names differing only by case stay apart.
+        self.assertEqual(namer.local_name("etc/Makefile"), "etc/Makefile")
+        self.assertEqual(namer.local_name("etc/makefile"), "etc/makefile.~case1")
+        self.assertEqual(namer.local_name("etc/makefile"), "etc/makefile.~case1")
+        self.assertEqual(namer.local_name("ETC/x"), "ETC.~case1/x")
+        self.assertEqual(namer.local_name("etc/Makefile/child"), "etc/Makefile/child")
+
+    def test_windows_naming_extracts_colliding_and_invalid_names(self) -> None:
+        import io
+        import tarfile
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from uac_parser.loaders import archive as module
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "collection.tar"
+            with tarfile.open(source, "w") as bundle:
+                for name, body in (
+                    ("c/var/log/a:b.log", b"colon"),
+                    ("c/etc/Readme", b"upper"),
+                    ("c/etc/readme", b"lower"),
+                ):
+                    info = tarfile.TarInfo(name)
+                    info.size = len(body)
+                    bundle.addfile(info, io.BytesIO(body))
+            original = module._MemberNamer
+
+            with mock.patch.object(
+                module, "_MemberNamer", lambda: original(windows=True)
+            ):
+                loaded = module.load_input(str(source))
+            try:
+                files = {
+                    path.relative_to(loaded.root).as_posix(): path.read_bytes()
+                    for path in loaded.root.rglob("*")
+                    if path.is_file()
+                }
+            finally:
+                loaded.cleanup()
+
+        self.assertEqual(
+            files,
+            {
+                "var/log/a%3Ab.log": b"colon",
+                "etc/Readme": b"upper",
+                "etc/readme.~case1": b"lower",
+            },
+        )
+
+    def test_one_unwritable_member_is_reported_not_fatal(self) -> None:
+        import io
+        import tarfile
+        import tempfile
+        from pathlib import Path
+
+        from uac_parser.loaders.archive import load_input
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "collection.tar"
+            with tarfile.open(source, "w") as bundle:
+                for name, body in (
+                    ("c/good.log", b"kept"),
+                    ("c/" + "n" * 300, b"name longer than any filesystem allows"),
+                    ("c/also-good.log", b"kept too"),
+                ):
+                    info = tarfile.TarInfo(name)
+                    info.size = len(body)
+                    bundle.addfile(info, io.BytesIO(body))
+
+            loaded = load_input(str(source))
+            try:
+                names = sorted(p.name for p in loaded.root.rglob("*") if p.is_file())
+                failures = [
+                    item
+                    for item in loaded.archive_exclusions or []
+                    if item["reason"] == "archive_member_extraction_failed"
+                ]
+            finally:
+                loaded.cleanup()
+
+        self.assertEqual(names, ["also-good.log", "good.log"])
+        self.assertEqual(len(failures), 1)
+        self.assertTrue(failures[0]["relative"].startswith("c/nnn"))
+        self.assertIn("OSError", failures[0]["error"])

@@ -5,6 +5,13 @@ All notable TraceQuarry changes are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed archive extraction on Windows for collections with paths longer than
+  260 characters, names containing characters NTFS rejects, and names that
+  differ only by case. A member that cannot be written is now reported as an
+  exclusion instead of aborting the analysis.
+
 ### Added
 
 - Added a native systemd journal decoder for regular and compact `*.journal`

@@ -6,8 +6,9 @@ import re
 import sqlite3
 from contextlib import suppress
 from datetime import UTC, datetime, tzinfo
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from uac_parser.timeline.event import TimelineEvent
@@ -53,6 +54,23 @@ MESSAGE_NAMES = (
 )
 
 
+WINDOWS_EXTENDED_PREFIX = "\\\\?\\"
+WINDOWS_CLASSIC_PATH_LIMIT = 248
+
+
+def _database_uri(path: Path) -> str:
+    """Build a SQLite URI, including for Windows extended-length paths."""
+    text = str(path)
+    if not text.startswith(WINDOWS_EXTENDED_PREFIX):
+        return path.as_uri()
+    plain = text[len(WINDOWS_EXTENDED_PREFIX) :]
+    if plain.startswith("UNC\\"):
+        plain = "\\\\" + plain[4:]
+    if len(plain) < WINDOWS_CLASSIC_PATH_LIMIT:
+        return PureWindowsPath(plain).as_uri()
+    return "file:////" + quote(text.replace("\\", "/").lstrip("/"), safe="/:")
+
+
 def parse(
     path: Path,
     relative: str,
@@ -63,7 +81,7 @@ def parse(
     if path.stat().st_size > MAX_DATABASE_BYTES:
         raise ValueError("SQLite database exceeds the 4 GiB parser safety limit.")
     database = sqlite3.connect(
-        f"{path.as_uri()}?mode=ro&immutable=1",
+        f"{_database_uri(path)}?mode=ro&immutable=1",
         uri=True,
         timeout=1,
     )

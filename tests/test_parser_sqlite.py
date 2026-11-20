@@ -122,3 +122,21 @@ class SqliteLogParserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DatabaseUriTests(unittest.TestCase):
+    def test_extended_length_windows_paths_become_valid_sqlite_uris(self) -> None:
+        from pathlib import PureWindowsPath
+
+        from uac_parser.parsers.sqlite_log import _database_uri
+
+        short = PureWindowsPath("\\\\?\\C:\\cases\\out\\[root]\\var\\db\\log.db")
+        self.assertEqual(
+            _database_uri(short),  # type: ignore[arg-type]
+            "file:///C:/cases/out/%5Broot%5D/var/db/log.db",
+        )
+        deep = PureWindowsPath("\\\\?\\C:\\" + "d" * 260 + "\\log.db")
+        self.assertEqual(
+            _database_uri(deep),  # type: ignore[arg-type]
+            "file:////%3F/C:/" + "d" * 260 + "/log.db",
+        )

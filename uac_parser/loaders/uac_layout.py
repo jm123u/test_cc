@@ -114,6 +114,7 @@ PATTERNS = {
 }
 
 
+LOGIN_BINARY_DIRECTORIES = {"log", "run"}
 LOGIN_BINARY_TEXT_SUFFIXES = (".txt", ".log", ".out", ".json", ".csv", ".md5", ".sha1")
 
 
@@ -297,7 +298,11 @@ def _valid_source(source_type: str, relative: str) -> bool:
             (".journal", ".journal~")
         )
     if source_type == "login_binary":
-        return not name.lower().endswith(LOGIN_BINARY_TEXT_SUFFIXES)
+        # Only the log and runtime directories (or a loose file given directly)
+        # hold these databases; /usr/bin/lastlog and similar are not evidence logs.
+        parts = relative.split("/")
+        located = len(parts) == 1 or parts[-2] in LOGIN_BINARY_DIRECTORIES
+        return located and not name.lower().endswith(LOGIN_BINARY_TEXT_SUFFIXES)
     if source_type == "ss_output":
         return "ss_" in name.lower() or "ss-" in name.lower()
     if source_type == "netstat_output":
