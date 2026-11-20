@@ -12,6 +12,12 @@ All notable TraceQuarry changes are documented here. The project follows
   differ only by case. A member that cannot be written is now reported as an
   exclusion instead of aborting the analysis.
 
+- Source discovery now walks the evidence tree once instead of once per
+  file-name pattern, and no longer follows symlinked directories.
+- The Windows launcher mirrors console output, tracebacks, and crash dumps to
+  `data\logs`, disables console QuickEdit so a stray click cannot freeze the
+  server, and no longer lets earlier keystrokes dismiss the exit prompt.
+
 ### Added
 
 - Added a native systemd journal decoder for regular and compact `*.journal`

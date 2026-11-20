@@ -32,6 +32,14 @@ If the program folder is not writable (for example `C:\Program Files`), data is
 stored in `%LOCALAPPDATA%\TraceQuarry\data` instead. Set the
 `TRACEQUARRY_DATA_DIR` environment variable to choose another location.
 
+## When something goes wrong
+
+Everything the console shows is also written to `data\logs\tracequarry-YYYYMMDD.log`,
+including error tracebacks and crash dumps, so the details survive even if the
+console window closes. Stage lines such as `stage=hashing_evidence items=52110`
+show what a long analysis is doing while the progress bar is not moving. Logs
+older than 30 days are removed at startup.
+
 ## Launch options
 
 `TraceQuarry.exe` accepts every `tracequarry-web` option plus `--no-browser`:

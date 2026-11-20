@@ -35,6 +35,8 @@ static void pause_if_own_console(void) {
         DWORD read = 0;
         wchar_t buffer[8];
         fwprintf(stderr, L"\nPress Enter to close this window.\n");
+        /* Keys typed while the server was running must not answer this prompt. */
+        FlushConsoleInputBuffer(input);
         ReadConsoleW(input, buffer, 1, &read, NULL);
     }
 }
@@ -78,6 +80,10 @@ int wmain(void) {
     GetExitCodeProcess(process.hProcess, &exit_code);
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
-    if (exit_code != 0 && exit_code != 0xC000013A) pause_if_own_console();
+    if (exit_code != 0 && exit_code != 0xC000013A) {
+        fwprintf(stderr, L"\nTraceQuarry stopped unexpectedly (exit code 0x%08lX).\n"
+                         L"Details are in data\\logs.\n", exit_code);
+        pause_if_own_console();
+    }
     return (int)exit_code;
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import platform
 import re
 import tarfile
@@ -82,6 +83,7 @@ from uac_parser.timeline.event import TimelineEvent
 from uac_parser.timeline.timestamp import parse_iso
 
 ProgressCallback = Callable[[dict[str, Any]], None]
+_LOGGER = logging.getLogger("tracequarry.pipeline")
 
 
 PARSER_DISPATCH = {
@@ -1860,6 +1862,15 @@ def _case_correlation_finding(correlation: dict[str, Any]) -> dict[str, Any]:
 
 
 def _emit_progress(callback: ProgressCallback | None, **payload: object) -> None:
+    # Stage boundaries go to the operational log so a long stage that reports no
+    # percentage (extraction, discovery, hashing) is still visibly progressing.
+    if payload.get("stage") != "parsing_sources" or payload.get("completed") == 0:
+        _LOGGER.info(
+            "stage=%s collection=%s items=%s",
+            payload.get("stage"),
+            payload.get("collection_name") or "",
+            payload.get("total") or "",
+        )
     if callback:
         callback(payload)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import stat
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -118,37 +119,74 @@ LOGIN_BINARY_DIRECTORIES = {"log", "run"}
 LOGIN_BINARY_TEXT_SUFFIXES = (".txt", ".log", ".out", ".json", ".csv", ".md5", ".sha1")
 
 
+def _walk_files(root: Path) -> list[tuple[Path, tuple[str, ...], int]]:
+    """List every regular file under root once, as (path, relative parts, size)."""
+    files: list[tuple[Path, tuple[str, ...], int]] = []
+    pending: list[tuple[Path, tuple[str, ...]]] = [(root, ())]
+    while pending:
+        directory, parts = pending.pop()
+        try:
+            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+        except OSError:
+            continue
+        subdirectories = []
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    subdirectories.append((Path(entry.path), (*parts, entry.name)))
+                elif entry.is_file(follow_symlinks=False):
+                    files.append(
+                        (Path(entry.path), (*parts, entry.name), entry.stat().st_size)
+                    )
+            except OSError:
+                continue
+        pending.extend(reversed(subdirectories))
+    return files
+
+
+def _matches_pattern(parts: tuple[str, ...], pattern_parts: tuple[str, ...]) -> bool:
+    """Match a pattern against the trailing path components, like ``rglob``."""
+    if len(parts) < len(pattern_parts):
+        return False
+    tail = parts[len(parts) - len(pattern_parts) :]
+    return all(
+        fnmatch(name, pattern)
+        for name, pattern in zip(tail, pattern_parts, strict=True)
+    )
+
+
 def discover_sources(root: Path) -> list[SourceFile]:
+    # One directory walk serves every pattern. Walking the tree once per pattern
+    # made discovery the slowest stage for collections with many files.
+    files = _walk_files(root)
+    relatives = ["/".join(parts) for _, parts, _ in files]
+    ignored = [bool(_ignored_artifact(relative)) for relative in relatives]
     sources: list[SourceFile] = []
     for source_type, patterns in PATTERNS.items():
         for pattern in patterns:
-            for path in root.rglob(pattern):
-                rel = path.relative_to(root).as_posix()
-                if _ignored_artifact(rel):
+            pattern_parts = tuple(pattern.split("/"))
+            for index, (path, parts, size) in enumerate(files):
+                if ignored[index] or not _matches_pattern(parts, pattern_parts):
                     continue
-                if path.is_file() and not path.is_symlink():
-                    if not _valid_source(source_type, rel):
-                        continue
-                    sources.append(
-                        SourceFile(
-                            path=path,
-                            relative=rel,
-                            source_type=source_type,
-                            size=path.stat().st_size,
-                        )
+                if not _valid_source(source_type, relatives[index]):
+                    continue
+                sources.append(
+                    SourceFile(
+                        path=path,
+                        relative=relatives[index],
+                        source_type=source_type,
+                        size=size,
                     )
-    for path in root.rglob("*"):
-        if not path.is_file() or path.is_symlink():
-            continue
-        rel = path.relative_to(root).as_posix()
-        if _ignored_artifact(rel) or not _is_sqlite_database(path):
+                )
+    for index, (path, _parts, size) in enumerate(files):
+        if ignored[index] or not _is_sqlite_database(path):
             continue
         sources.append(
             SourceFile(
                 path=path,
-                relative=rel,
+                relative=relatives[index],
                 source_type="sqlite_log",
-                size=path.stat().st_size,
+                size=size,
             )
         )
     seen: set[str] = set()
