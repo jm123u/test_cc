@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from tq_ext import web_routes
-from tq_ext.artifact_view import MAX_EVENTS_PER_ROW, build_artifact_view
+from tq_ext.artifact_view import MAX_EVENTS_PER_GROUP, build_artifact_view
 from uac_parser.pipeline import run_pipeline
 
 
@@ -65,11 +65,14 @@ class ArtifactViewTests(unittest.TestCase):
         failed, success = inbound["rows"]
         self.assertEqual(failed["cells"][2:4], ["198.51.100.50", "Failed x 30"])
         self.assertEqual(failed["event_count"], 30)
-        self.assertEqual(len(failed["events"]), MAX_EVENTS_PER_ROW)
+        self.assertEqual(len(failed["events"]), MAX_EVENTS_PER_GROUP)
+        self.assertEqual(failed["cells"][0], "2026-03-01 09:00:00 to 09:29:00")
+        self.assertEqual(failed["cells"][1], "user0, user1, user2")
         self.assertEqual(failed["score"], "")
         self.assertEqual(success["cells"][3], "Success")
         self.assertEqual(success["score"], "notable")
         self.assertEqual(inbound["notable"], 1)
+        self.assertEqual((inbound["notable_events"], inbound["likely_events"]), (1, 0))
 
     def test_accounts_merge_state_and_flag_changes(self) -> None:
         events = [
@@ -221,6 +224,52 @@ class ArtifactViewTests(unittest.TestCase):
         plain = files["rows"][0]
         self.assertEqual(plain["events"][0]["raw"], "0|/usr/lib/pkg/file_000|...")
         self.assertEqual(category(view, "other")["event_count"], 0)
+
+    def test_high_volume_categories_are_sampled_with_exact_totals(self) -> None:
+        from tq_ext import artifact_view
+
+        events = [
+            event(
+                event_action="shell_command",
+                command=f"ls /srv/{index}",
+                severity="high" if index % 100 == 0 else "informational",
+                summary=f"Shell command {index}",
+                timestamp=f"2026-03-01T{index // 3600:02d}:{index // 60 % 60:02d}:{index % 60:02d}Z",
+            )
+            for index in range(3000)
+        ]
+        events += [
+            event(
+                source_type="web_log",
+                event_action="http_request",
+                src_ip=f"203.0.113.{index % 7}",
+                summary=f"GET /item/{index} returned 200",
+                severity="medium" if index == 4000 else "informational",
+            )
+            for index in range(5000)
+        ]
+        original = artifact_view.MAX_ROWS_PER_CATEGORY
+        artifact_view.MAX_ROWS_PER_CATEGORY = 50
+        try:
+            view = build_artifact_view(events)
+        finally:
+            artifact_view.MAX_ROWS_PER_CATEGORY = original
+
+        commands = category(view, "commands")
+        self.assertEqual(commands["event_count"], 3000)
+        self.assertEqual(commands["notable_events"], 30)
+        self.assertTrue(commands["sampled"])
+        self.assertEqual(len(commands["rows"]), 50)
+        self.assertEqual(sum(row["score"] == "notable" for row in commands["rows"]), 30)
+        web = category(view, "web")
+        self.assertEqual((web["event_count"], len(web["rows"])), (5000, 7))
+        self.assertEqual(sum(int(row["cells"][1]) for row in web["rows"]), 5000)
+        self.assertEqual(web["likely_events"], 1)
+        flagged = [row for row in web["rows"] if row["score"]]
+        self.assertEqual(
+            flagged[0]["events"][0]["summary"], "GET /item/4000 returned 200"
+        )
+        self.assertEqual(view["row_limit"], 50)
 
     def test_routes_serve_page_assets_and_job_view(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

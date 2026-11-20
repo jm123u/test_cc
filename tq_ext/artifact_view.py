@@ -24,8 +24,11 @@ SCORE_RANK = {NOTABLE: 2, LIKELY: 1, NONE: 0}
 # First version: derive the score from the upstream severity label.
 SEVERITY_SCORE = {"critical": NOTABLE, "high": NOTABLE, "medium": LIKELY}
 
-MAX_ROWS_PER_CATEGORY = 5000
+MAX_ROWS_PER_CATEGORY = 2000
 MAX_EVENTS_PER_ROW = 25
+MAX_EVENTS_PER_GROUP = 5
+MAX_GROUPS = 20000
+OVERFLOW_GROUP = "(other sources)"
 MAX_TEXT = 2000
 
 REMOTE_COMMAND_RE = re.compile(
@@ -138,19 +141,6 @@ def _extra(event: Event, key: str) -> str:
     )
 
 
-def _span(events: list[Event]) -> str:
-    stamps = sorted(_time(event) for event in events if event.get("timestamp"))
-    if not stamps:
-        return ""
-    return (
-        stamps[0]
-        if stamps[0] == stamps[-1]
-        else f"{stamps[0]} to {stamps[-1][11:]}"
-        if stamps[0][:10] == stamps[-1][:10]
-        else f"{stamps[0]} to {stamps[-1]}"
-    )
-
-
 def _simple(
     cells: Callable[[Event], Sequence[object]],
 ) -> Callable[[list[Event]], list[Row]]:
@@ -166,33 +156,6 @@ def _simple(
         return rows
 
     return build
-
-
-def _grouped(
-    key: Callable[[Event], str], cells: Callable[[str, list[Event]], Sequence[object]]
-) -> Callable[[list[Event]], list[Row]]:
-    def build(events: list[Event]) -> list[Row]:
-        groups: dict[str, list[Event]] = {}
-        for event in events:
-            groups.setdefault(key(event), []).append(event)
-        rows = []
-        for name, members in groups.items():
-            stamps = sorted(
-                str(e.get("timestamp") or "") for e in members if e.get("timestamp")
-            )
-            row = Row(
-                [_text(cell) for cell in cells(name, members)],
-                sort_key=stamps[0] if stamps else "",
-            )
-            for member in sorted(members, key=lambda e: -SCORE_RANK[_score(e)]):
-                row.add(member)
-            rows.append(row)
-        return rows
-
-    return build
-
-
-# --- category builders -----------------------------------------------------
 
 
 def _build_accounts(events: list[Event]) -> list[Row]:
@@ -246,12 +209,9 @@ def _logon_result(event: Event) -> str:
 
 
 def _build_inbound(events: list[Event]) -> list[Row]:
+    """Rows for individual logons; failed attempts are tallied per source."""
     rows: list[Row] = []
-    failures: dict[str, list[Event]] = {}
     for event in events:
-        if event.get("event_action") in FAILED_LOGON_ACTIONS:
-            failures.setdefault(str(event.get("src_ip") or "(local)"), []).append(event)
-            continue
         row = Row(
             [
                 _time(event),
@@ -264,28 +224,124 @@ def _build_inbound(events: list[Event]) -> list[Row]:
         )
         row.add(event)
         rows.append(row)
-    for source, members in failures.items():
-        users = list(dict.fromkeys(str(e.get("user") or "?") for e in members))
-        shown = ", ".join(users[:4]) + (
-            f" +{len(users) - 4} more" if len(users) > 4 else ""
-        )
-        stamps = sorted(
-            str(e.get("timestamp") or "") for e in members if e.get("timestamp")
-        )
-        row = Row(
-            [
-                _span(members),
-                shown,
-                source,
-                f"Failed x {len(members)}" if len(members) > 1 else "Failed",
-                ", ".join(sorted({str(e.get("source_type") or "") for e in members})),
-            ],
-            sort_key=stamps[0] if stamps else "",
-        )
-        for member in sorted(members, key=lambda e: -SCORE_RANK[_score(e)]):
-            row.add(member)
-        rows.append(row)
     return rows
+
+
+class CappedBucket:
+    """Hold a bounded sample of a category's events while counting all of them.
+
+    Timelines can run to millions of events, so a category keeps at most
+    ``limit`` flagged and ``limit`` unflagged events. Flagged events are kept
+    in preference, and the totals stay exact.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.flagged: list[Event] = []
+        self.plain: list[Event] = []
+        self.total = 0
+        self.scores = {NOTABLE: 0, LIKELY: 0}
+
+    def add(self, event: Event) -> None:
+        self.total += 1
+        score = _score(event)
+        if score:
+            self.scores[score] += 1
+            if len(self.flagged) < self.limit:
+                self.flagged.append(event)
+        elif len(self.plain) < self.limit:
+            self.plain.append(event)
+
+    def events(self) -> list[Event]:
+        return self.flagged + self.plain
+
+
+class GroupTally:
+    """Count events per key, keeping a few sample events for each group."""
+
+    def __init__(self) -> None:
+        self.groups: dict[str, dict[str, Any]] = {}
+        self.total = 0
+        self.scores = {NOTABLE: 0, LIKELY: 0}
+
+    def add(self, key: str, event: Event, value: str = "") -> None:
+        self.total += 1
+        score = _score(event)
+        if score:
+            self.scores[score] += 1
+        group = self.groups.get(key)
+        if group is None:
+            if len(self.groups) >= MAX_GROUPS:
+                key = OVERFLOW_GROUP
+                group = self.groups.get(key)
+            if group is None:
+                group = {
+                    "count": 0,
+                    "first": "",
+                    "last": "",
+                    "values": {},
+                    "kinds": {},
+                    "events": [],
+                    "flagged": 0,
+                }
+                self.groups[key] = group
+        group["count"] += 1
+        stamp = str(event.get("timestamp") or "")
+        if stamp:
+            group["first"] = min(group["first"] or stamp, stamp)
+            group["last"] = max(group["last"], stamp)
+        if value and len(group["values"]) < 8:
+            group["values"][value] = True
+        group["kinds"][str(event.get("source_type") or "")] = True
+        events = group["events"]
+        if score and group["flagged"] < MAX_EVENTS_PER_GROUP:
+            group["flagged"] += 1
+            if len(events) >= MAX_EVENTS_PER_GROUP:
+                events.pop()
+            events.insert(0, event)
+        elif len(events) < MAX_EVENTS_PER_GROUP:
+            events.append(event)
+
+    @staticmethod
+    def window(group: dict[str, Any]) -> str:
+        first = group["first"][:19].replace("T", " ")
+        last = group["last"][:19].replace("T", " ")
+        if not first or first == last:
+            return first
+        return (
+            f"{first} to {last[11:]}"
+            if first[:10] == last[:10]
+            else f"{first} to {last}"
+        )
+
+    def rows(self, cells: Callable[[str, dict[str, Any]], list[str]]) -> list[Row]:
+        rows = []
+        for key, group in self.groups.items():
+            row = Row(
+                [_text(cell) for cell in cells(key, group)], sort_key=group["first"]
+            )
+            row.events = list(group["events"])
+            row.event_count = group["count"]
+            rows.append(row)
+        return rows
+
+
+def _failed_logon_cells(source: str, group: dict[str, Any]) -> list[str]:
+    users = list(group["values"])
+    shown = ", ".join(users[:4]) + (" and others" if len(users) > 4 else "")
+    count = group["count"]
+    return [
+        GroupTally.window(group),
+        shown,
+        source,
+        f"Failed x {count}" if count > 1 else "Failed",
+        ", ".join(sorted(kind for kind in group["kinds"] if kind)),
+    ]
+
+
+def _web_cells(client: str, group: dict[str, Any]) -> list[str]:
+    sample = group["events"][0].get("summary") if group["events"] else ""
+    return [client, str(group["count"]), GroupTally.window(group), _text(sample)]
 
 
 def _remote_host(tool: str, arguments: str) -> str:
@@ -348,6 +404,7 @@ class FileActivity:
     def __init__(self) -> None:
         self.files: dict[str, list[Any]] = {}
         self.event_count = 0
+        self.scores = {NOTABLE: 0, LIKELY: 0}
 
     def add(self, event: Event) -> None:
         self.event_count += 1
@@ -369,6 +426,7 @@ class FileActivity:
         record[0][slot] = max(record[0][slot], _time(event))
         record[5] += 1
         if _score(event) != NONE:
+            self.scores[_score(event)] += 1
             if record[6] is None:
                 record[6] = []
             if len(record[6]) < MAX_FLAGGED_EVENTS_PER_FILE:
@@ -582,15 +640,7 @@ CATEGORIES: tuple[Category, ...] = (
         ("Client", "Requests", "Window (UTC)", "Sample"),
         (0, 3),
         lambda e: e.get("source_type") == "web_log",
-        _grouped(
-            lambda e: str(e.get("src_ip") or "(unknown)"),
-            lambda client, members: [
-                client,
-                str(len(members)),
-                _span(members),
-                _text(members[0].get("summary")),
-            ],
-        ),
+        lambda events: [],
     ),
     Category(
         "keys",
@@ -698,7 +748,12 @@ def _public_row(row: Row) -> dict[str, Any]:
 
 
 def _category_payload(
-    category: Category, rows: list[dict[str, Any]], event_count: int, truncated: int
+    category: Category,
+    rows: list[dict[str, Any]],
+    event_count: int,
+    scores: dict[str, int],
+    omitted_rows: int,
+    sampled: bool,
 ) -> dict[str, Any]:
     return {
         "id": category.id,
@@ -711,52 +766,96 @@ def _category_payload(
         "event_count": event_count,
         "notable": sum(row["score"] == NOTABLE for row in rows),
         "likely": sum(row["score"] == LIKELY for row in rows),
-        "truncated_rows": truncated,
+        "notable_events": scores[NOTABLE],
+        "likely_events": scores[LIKELY],
+        "truncated_rows": omitted_rows,
+        "sampled": sampled,
     }
 
 
+def _limit_rows(
+    rows: list[dict[str, Any]], limit: int
+) -> tuple[list[dict[str, Any]], int]:
+    """Keep at most ``limit`` rows, preferring flagged rows, in sort order."""
+    rows.sort(key=lambda row: row["sort"])
+    omitted = max(0, len(rows) - limit)
+    if omitted:
+        flagged = [row for row in rows if row["score"]]
+        plain = [row for row in rows if not row["score"]]
+        rows = (flagged + plain)[:limit]
+        rows.sort(key=lambda row: row["sort"])
+    return rows, omitted
+
+
 def build_artifact_view(events: Iterable[Event]) -> dict[str, Any]:
-    """Classify events into categories; the first matching category wins."""
-    buckets: dict[str, list[Event]] = {category.id: [] for category in CATEGORIES}
-    buckets[OTHER.id] = []
+    """Classify events into categories in one pass with bounded memory.
+
+    The first matching category wins. High-volume kinds (file timestamps,
+    failed logons, web requests) are tallied instead of stored, and every
+    other category keeps a bounded sample while its totals stay exact.
+    """
+    limit = MAX_ROWS_PER_CATEGORY
+    buckets = {category.id: CappedBucket(limit) for category in (*CATEGORIES, OTHER)}
     hosts: dict[str, int] = {}
     files = FileActivity()
+    failed_logons = GroupTally()
+    web = GroupTally()
     total = 0
     for event in events:
         total += 1
         host = str(event.get("host") or "")
         if host:
             hosts[host] = hosts.get(host, 0) + 1
-        if event.get("event_action") in FILE_ACTIONS and not _integrity(event):
+        action = event.get("event_action")
+        if _integrity(event):
+            buckets["integrity"].add(event)
+        elif action in FILE_ACTIONS:
             files.add(event)
-            continue
-        target = next((c.id for c in CATEGORIES if c.matches(event)), OTHER.id)
-        buckets[target].append(event)
+        elif action in FAILED_LOGON_ACTIONS:
+            failed_logons.add(
+                str(event.get("src_ip") or "(local)"),
+                event,
+                str(event.get("user") or "?"),
+            )
+        elif event.get("source_type") == "web_log":
+            web.add(str(event.get("src_ip") or "(unknown)"), event)
+        else:
+            target = next((c.id for c in CATEGORIES if c.matches(event)), OTHER.id)
+            buckets[target].add(event)
     by_id = {category.id: category for category in (*CATEGORIES, OTHER)}
     categories = []
     for category_id in DISPLAY_ORDER:
         category = by_id[category_id]
+        bucket = buckets[category_id]
+        scores = dict(bucket.scores)
+        event_count = bucket.total
+        sampled = bucket.total > len(bucket.flagged) + len(bucket.plain)
         if category_id == "files":
-            rows, truncated = files.rows(MAX_ROWS_PER_CATEGORY)
+            rows, omitted = files.rows(limit)
             categories.append(
-                _category_payload(category, rows, files.event_count, truncated)
+                _category_payload(
+                    category, rows, files.event_count, files.scores, omitted, False
+                )
             )
             continue
-        rows = [_public_row(row) for row in category.build(buckets[category_id])]
-        rows.sort(key=lambda row: row["sort"])
-        truncated = max(0, len(rows) - MAX_ROWS_PER_CATEGORY)
-        if truncated:
-            flagged_rows = [row for row in rows if row["score"]]
-            rest = [row for row in rows if not row["score"]]
-            rows = (flagged_rows + rest)[:MAX_ROWS_PER_CATEGORY]
-            rows.sort(key=lambda row: row["sort"])
+        built = category.build(bucket.events())
+        tally = {"inbound": failed_logons, "web": web}.get(category_id)
+        if tally is not None:
+            built += tally.rows(
+                _failed_logon_cells if category_id == "inbound" else _web_cells
+            )
+            event_count += tally.total
+            for name in scores:
+                scores[name] += tally.scores[name]
+        rows, omitted = _limit_rows([_public_row(row) for row in built], limit)
         categories.append(
-            _category_payload(category, rows, len(buckets[category_id]), truncated)
+            _category_payload(category, rows, event_count, scores, omitted, sampled)
         )
     return {
         "schema": "tq_ext.artifact_view/1",
         "scoring": "severity",
         "event_count": total,
+        "row_limit": limit,
         "hosts": sorted(hosts, key=lambda name: -hosts[name]),
         "categories": categories,
     }

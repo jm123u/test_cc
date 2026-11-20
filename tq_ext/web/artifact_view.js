@@ -5,10 +5,11 @@
   const SCORE_LABEL = { notable: 'Notable', likely: 'Likely notable', '': 'Not flagged' };
   const RANK = { notable: 2, likely: 1, '': 0 };
   const jobId = new URLSearchParams(location.search).get('job') || '';
+  const RENDER_LIMIT = 1000;
   const state = { view: null, current: 'notable', flaggedOnly: false, text: '', open: null };
 
   function show(id) {
-    for (const name of ['view', 'picker', 'message']) $(name).hidden = name !== id;
+    for (const name of ['view', 'picker', 'message', 'loading']) $(name).hidden = name !== id;
   }
   function fail(title, text) {
     $('message-title').textContent = title;
@@ -37,7 +38,9 @@
       columns: ['Category', 'Item', 'Why it stands out'], mono: [], rows,
       notable: rows.filter(r => r.score === 'notable').length,
       likely: rows.filter(r => r.score === 'likely').length,
-      truncated_rows: 0,
+      notable_events: state.view.categories.reduce((sum, c) => sum + c.notable_events, 0),
+      likely_events: state.view.categories.reduce((sum, c) => sum + c.likely_events, 0),
+      truncated_rows: 0, sampled: state.view.categories.some(c => c.sampled || c.truncated_rows),
     };
   }
   function categories() {
@@ -51,8 +54,9 @@
     const all = categories();
     const groups = [...new Set(all.map(c => c.group))];
     $('nav').innerHTML = groups.map(group => `<div class="group"><h2>${esc(group)}</h2><ul>${all.filter(c => c.group === group).map(c => {
-      const flagged = c.notable + c.likely;
-      const badge = flagged ? `<span class="badge ${c.notable ? 'notable' : 'likely'}" title="${c.notable} notable, ${c.likely} likely notable">${flagged}</span>` : '';
+      const flagged = c.notable_events + c.likely_events;
+      const shown = flagged > 9999 ? `${Math.round(flagged / 1000)}k` : String(flagged);
+      const badge = flagged ? `<span class="badge ${c.notable_events ? 'notable' : 'likely'}" title="${c.notable_events} notable and ${c.likely_events} likely notable event(s)">${shown}</span>` : '';
       return `<li><button class="nav${c.rows.length ? '' : ' is-empty'}" type="button" data-id="${esc(c.id)}" aria-current="${c.id === state.current}"><span>${esc(c.name)}</span>${badge}</button></li>`;
     }).join('')}</ul></div>`).join('');
   }
@@ -84,7 +88,9 @@
     const total = rows.length;
     if (state.flaggedOnly) rows = rows.filter(item => item.row.score);
     if (needle) rows = rows.filter(item => item.row.cells.join(' ').toLowerCase().includes(needle));
-    $('count').textContent = `${rows.length} of ${total} shown`;
+    const matched = rows.length;
+    rows = rows.slice(0, RENDER_LIMIT);
+    $('count').textContent = matched > rows.length ? `first ${rows.length} of ${matched} matching rows` : `${matched} of ${total} shown`;
     const span = category.columns.length + 1;
     $('head').innerHTML = `<tr>${category.columns.map(c => `<th>${esc(c)}</th>`).join('')}<th>Score</th></tr>`;
     $('body').innerHTML = rows.length ? rows.map(({ row, index }) => {
@@ -94,7 +100,8 @@
     }).join('') : `<tr><td class="empty" colspan="${span}">${total ? 'No rows match the current filter.' : 'No evidence of this kind was parsed from the collection.'}</td></tr>`;
     const notes = ['Select a row to see why it was flagged, the raw records, and the source files.',
       'Scores currently follow the parser severity: critical and high are Notable, medium is Likely notable.'];
-    if (category.truncated_rows) notes.push(`${category.truncated_rows} unflagged row(s) were left out of this category to keep the page responsive.`);
+    if (matched > rows.length) notes.push(`Only the first ${RENDER_LIMIT} matching rows are drawn; narrow them with the filter box or Flagged only.`);
+    if (category.sampled || category.truncated_rows) notes.push(`This category holds ${category.event_count || 'more'} event(s); the page lists at most ${state.view.row_limit} rows per category, flagged ones first. The timeline and exports hold everything.`);
     $('foot').textContent = notes.join(' ');
   }
   function render() { renderNav(); renderTable(); }
@@ -112,6 +119,7 @@
   }
 
   async function loadView() {
+    show('loading');
     try {
       state.view = await getJson(`/api/job/${encodeURIComponent(jobId)}/artifact-view`);
     } catch (error) {
@@ -126,6 +134,8 @@
     render();
   }
   async function loadPicker() {
+    show('loading');
+    $('loading-text').textContent = 'Listing completed cases.';
     let cases = [];
     try {
       cases = (await getJson('/api/cases')).cases || [];

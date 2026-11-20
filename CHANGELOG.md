@@ -22,6 +22,10 @@ All notable TraceQuarry changes are documented here. The project follows
   default.
 - The artifact view folds file-timestamp events into one compact record per
   path (now including the creation time) instead of holding every event.
+- The artifact view now builds in one pass with bounded memory for every
+  category (about 20 s and 0.4 GB for a 3.1-million-event timeline), shows a
+  loading state, reports exact flagged totals in the badges, and lists at most
+  2,000 rows per category with flagged rows first.
 - Source discovery now walks the evidence tree once instead of once per
   file-name pattern, and no longer follows symlinked directories.
 - The Windows launcher mirrors console output, tracebacks, and crash dumps to
