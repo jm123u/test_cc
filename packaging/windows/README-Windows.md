@@ -40,6 +40,14 @@ console window closes. Stage lines such as `stage=hashing_evidence items=52110`
 show what a long analysis is doing while the progress bar is not moving. Logs
 older than 30 days are removed at startup.
 
+## Large collections
+
+Analysis is single-threaded and holds the timeline in memory: allow roughly
+3 KB of RAM per event, and expect a full-disk file listing (bodyfile) to add up
+to four events per file. The experimental CaseWeave bundle is switched off in
+this build because it roughly triples peak memory; set the environment variable
+`TRACEQUARRY_CASEWEAVE_BUNDLE=1` before starting to produce it.
+
 ## Launch options
 
 `TraceQuarry.exe` accepts every `tracequarry-web` option plus `--no-browser`:

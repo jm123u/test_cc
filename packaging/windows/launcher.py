@@ -233,6 +233,9 @@ def main(argv: list[str] | None = None) -> int:
         for root in roots:
             server_args += ["--input-root", str(root)]
 
+    # The experimental CaseWeave bundle roughly triples peak memory on large
+    # collections and has no released consumer yet; opt in with the variable.
+    os.environ.setdefault("TRACEQUARRY_CASEWEAVE_BUNDLE", "0")
     disable_quick_edit()
     log_path = start_log(data_dir)
     print("TraceQuarry portable")

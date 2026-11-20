@@ -5,7 +5,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-@dataclass
+# Slots drop the per-instance attribute dictionary, which is most of an event's
+# memory footprint; large collections hold millions of events at once.
+@dataclass(slots=True)
 class TimelineEvent:
     schema_version: str = "1.2"
     event_id: str = ""
@@ -56,7 +58,7 @@ class TimelineEvent:
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        payload = self.__dict__.copy()
+        payload = {name: getattr(self, name) for name in self.__slots__}
         for name in (
             "mitre",
             "mitre_candidates",

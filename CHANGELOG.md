@@ -12,6 +12,16 @@ All notable TraceQuarry changes are documented here. The project follows
   differ only by case. A member that cannot be written is now reported as an
   exclusion instead of aborting the analysis.
 
+- Large collections: tool-name rules now reject non-matching events with a
+  substring test before any regular expression runs, events use slots, and the
+  pipeline keeps fewer simultaneous copies of the timeline. A 400,000-event
+  collection went from 367 s and 4.9 GB peak memory to 86 s and 1.2 GB with
+  byte-identical timeline output.
+- `TRACEQUARRY_CASEWEAVE_BUNDLE=0` skips the experimental CaseWeave bundle,
+  which re-serializes every event in memory. The Windows launcher sets it by
+  default.
+- The artifact view folds file-timestamp events into one compact record per
+  path (now including the creation time) instead of holding every event.
 - Source discovery now walks the evidence tree once instead of once per
   file-name pattern, and no longer follows symlinked directories.
 - The Windows launcher mirrors console output, tracebacks, and crash dumps to

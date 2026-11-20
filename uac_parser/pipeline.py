@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import platform
 import re
 import tarfile
@@ -403,6 +404,31 @@ def run_pipeline(
         "TraceQuarry Collection",
         analysis.collection_fingerprint,
     )
+    if _caseweave_bundle_enabled():
+        _write_single_caseweave_bundle(output_dir, analysis, reference, threat_type)
+    _write_run_manifest(analysis, start, end, timezone_name, threat_type)
+    return PipelineResult(
+        output=output_dir,
+        events=len(analysis.full_events),
+        mini_events=len(analysis.mini_events),
+        findings=len(analysis.findings),
+        errors=len(analysis.parser_errors),
+        ioc_hits=len(analysis.ioc_hits),
+    )
+
+
+def _caseweave_bundle_enabled() -> bool:
+    """The experimental CaseWeave bundle re-serializes every event in memory.
+
+    Set ``TRACEQUARRY_CASEWEAVE_BUNDLE=0`` to skip it for large collections.
+    """
+    value = os.environ.get("TRACEQUARRY_CASEWEAVE_BUNDLE", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _write_single_caseweave_bundle(
+    output_dir: Path, analysis: CollectionAnalysis, reference: str, threat_type: str
+) -> None:
     custody_reference = _caseweave_custody_references(output_dir, [analysis])[
         analysis.collection_id
     ]
@@ -421,15 +447,6 @@ def run_pipeline(
         case_reference=reference,
         suggested_name=analysis.collection_name or "TraceQuarry Collection",
         incident_type=threat_type,
-    )
-    _write_run_manifest(analysis, start, end, timezone_name, threat_type)
-    return PipelineResult(
-        output=output_dir,
-        events=len(analysis.full_events),
-        mini_events=len(analysis.mini_events),
-        findings=len(analysis.findings),
-        errors=len(analysis.parser_errors),
-        ioc_hits=len(analysis.ioc_hits),
     )
 
 
@@ -707,7 +724,9 @@ def _write_caseweave_exports(
     case_name: str,
     threat_type: str,
 ) -> list[dict[str, Any]]:
-    exports = []
+    exports: list[dict[str, Any]] = []
+    if not _caseweave_bundle_enabled():
+        return exports
     custody_by_collection = _caseweave_custody_references(output_dir, analyses)
     for analysis in analyses:
         export = write_caseweave_bundle(
@@ -1402,15 +1421,21 @@ def _attach_original_event_ids(events: list[TimelineEvent]) -> list[TimelineEven
         if not event.collection_id or not event.event_id:
             prepared.append(event)
             continue
-        extra = dict(event.extra)
-        extra.setdefault("collection_event_id", event.event_id)
-        prepared.append(replace(event, event_id="", extra=extra))
+        # Updated in place: the caller discards its list, and assign_event_ids
+        # already returns a fresh copy of every event it renumbers.
+        event.extra = {**event.extra}
+        event.extra.setdefault("collection_event_id", event.event_id)
+        event.event_id = ""
+        prepared.append(event)
     reassigned = assign_event_ids(prepared)
     id_map = {
         event.extra["collection_event_id"]: event.event_id
         for event in reassigned
         if event.extra.get("collection_event_id") and event.event_id
     }
+    del prepared
+    # Most events reference no other event; copying only those that do keeps
+    # the peak at two copies of the timeline instead of three.
     return [
         replace(
             event,
@@ -1418,6 +1443,8 @@ def _attach_original_event_ids(events: list[TimelineEvent]) -> list[TimelineEven
                 id_map.get(event_id, event_id) for event_id in event.related_event_ids
             ],
         )
+        if event.related_event_ids
+        else event
         for event in reassigned
     ]
 

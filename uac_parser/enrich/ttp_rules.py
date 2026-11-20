@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any
 
 from uac_parser.enrich.rule_registry import (
@@ -305,15 +306,8 @@ def _apply_registry_tool_tags(
     indicator_search: bool,
     registry_tools: dict[str, dict[str, Any]],
 ) -> None:
-    for tool_id, rule in registry_tools.items():
-        literals = [
-            str(value).lower()
-            for value in rule.get("match_literals", [])
-            if str(value).strip()
-        ]
-        if not literals or not any(
-            _literal_match(text, literal) for literal in literals
-        ):
+    for tool_id, rule, literals in _tool_literals(registry_tools):
+        if not any(_literal_match(text, literal) for literal in literals):
             continue
         category = str(rule.get("category") or "tooling")
         confidence = str(rule.get("confidence_when_matched") or "medium")
@@ -366,14 +360,45 @@ def _apply_registry_ttp_tags(
         )
 
 
-def _literal_match(text: str, literal: str) -> bool:
-    if not literal:
-        return False
+_TOOL_LITERALS: list[
+    tuple[dict[str, dict[str, Any]], list[tuple[str, dict[str, Any], list[str]]]]
+] = []
+
+
+def _tool_literals(
+    registry_tools: dict[str, dict[str, Any]],
+) -> list[tuple[str, dict[str, Any], list[str]]]:
+    """Lower-cased match literals per tool, prepared once per registry object."""
+    if _TOOL_LITERALS and _TOOL_LITERALS[0][0] is registry_tools:
+        return _TOOL_LITERALS[0][1]
+    prepared = []
+    for tool_id, rule in registry_tools.items():
+        literals = [
+            str(value).lower()
+            for value in rule.get("match_literals", [])
+            if str(value).strip()
+        ]
+        if literals:
+            prepared.append((tool_id, rule, literals))
+    _TOOL_LITERALS[:] = [(registry_tools, prepared)]
+    return prepared
+
+
+@lru_cache(maxsize=4096)
+def _literal_pattern(literal: str) -> re.Pattern[str] | None:
+    """Word-bounded pattern for identifier-like literals, else ``None``."""
     if re.fullmatch(r"[a-z0-9_.+-]+", literal):
-        return bool(
-            re.search(rf"(?<![a-z0-9_.-]){re.escape(literal)}(?![a-z0-9_.-])", text)
-        )
-    return literal in text
+        return re.compile(rf"(?<![a-z0-9_.-]){re.escape(literal)}(?![a-z0-9_.-])")
+    return None
+
+
+def _literal_match(text: str, literal: str) -> bool:
+    # A bounded match implies a plain substring match, so the substring test
+    # rejects almost every event before any regular expression runs.
+    if not literal or literal not in text:
+        return False
+    pattern = _literal_pattern(literal)
+    return True if pattern is None else bool(pattern.search(text))
 
 
 def _execution_text(event: TimelineEvent) -> str:

@@ -171,8 +171,56 @@ class ArtifactViewTests(unittest.TestCase):
         )
         files = category(view, "files")
         self.assertEqual((len(files["rows"]), files["rows"][0]["event_count"]), (1, 2))
+        self.assertEqual(files["event_count"], 2)
+        self.assertEqual(
+            files["rows"][0]["cells"],
+            ["/tmp/x", "2026-03-01 09:15:00", "2026-03-01 09:15:00", "", "", "10", ""],
+        )
         self.assertEqual(category(view, "commands")["likely"], 1)
         self.assertEqual(view["hosts"], ["web01"])
+
+    def test_large_file_listings_stay_compact_and_keep_flagged_files(self) -> None:
+        from tq_ext import artifact_view
+
+        events = []
+        for index in range(60):
+            for action in (
+                "file_modified",
+                "file_accessed",
+                "metadata_changed",
+                "file_created",
+            ):
+                events.append(
+                    event(
+                        event_action=action,
+                        file_path=f"/usr/lib/pkg/file_{index:03d}",
+                        severity="high"
+                        if index == 57 and action == "file_modified"
+                        else "informational",
+                        summary=f"{action} file_{index:03d}",
+                        raw=f"0|/usr/lib/pkg/file_{index:03d}|...",
+                        source_path="bodyfile/bodyfile.txt",
+                    )
+                )
+        original = artifact_view.MAX_ROWS_PER_CATEGORY
+        artifact_view.MAX_ROWS_PER_CATEGORY = 10
+        try:
+            view = build_artifact_view(events)
+        finally:
+            artifact_view.MAX_ROWS_PER_CATEGORY = original
+
+        files = category(view, "files")
+        self.assertEqual(files["event_count"], 240)
+        self.assertEqual((len(files["rows"]), files["truncated_rows"]), (10, 50))
+        flagged = [row for row in files["rows"] if row["score"]]
+        self.assertEqual(
+            [row["cells"][0] for row in flagged], ["/usr/lib/pkg/file_057"]
+        )
+        self.assertEqual(flagged[0]["why"], ["file_modified file_057"])
+        self.assertEqual(flagged[0]["event_count"], 4)
+        plain = files["rows"][0]
+        self.assertEqual(plain["events"][0]["raw"], "0|/usr/lib/pkg/file_000|...")
+        self.assertEqual(category(view, "other")["event_count"], 0)
 
     def test_routes_serve_page_assets_and_job_view(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

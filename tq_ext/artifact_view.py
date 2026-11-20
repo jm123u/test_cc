@@ -70,10 +70,12 @@ COMMAND_ACTIONS = {
     "su_session_opened",
 }
 FILE_ACTIONS = {
-    "file_accessed": "accessed",
-    "file_modified": "modified",
-    "metadata_changed": "changed",
+    "file_modified": 0,
+    "file_accessed": 1,
+    "metadata_changed": 2,
+    "file_created": 3,
 }
+MAX_FLAGGED_EVENTS_PER_FILE = 4
 INTEGRITY_ACTIONS = {
     "login_records_zeroed",
     "login_record_time_regression",
@@ -335,21 +337,83 @@ def _outbound_cells(event: Event) -> list[str]:
     ]
 
 
-def _file_cells(path: str, members: list[Event]) -> list[str]:
-    times = {"accessed": "", "modified": "", "changed": ""}
-    for event in members:
-        kind = FILE_ACTIONS.get(str(event.get("event_action")), "")
-        if kind:
-            times[kind] = max(times[kind], _time(event))
-    first = members[0]
-    return [
-        path,
-        times["modified"],
-        times["accessed"],
-        times["changed"],
-        _extra(first, "size"),
-        _text(first.get("uid")),
-    ]
+class FileActivity:
+    """Fold file-timestamp events into one compact record per path.
+
+    A file listing contributes up to four events per file and can run to
+    millions of events, so this keeps a few strings per path instead of the
+    events themselves. Only flagged events are retained for the detail view.
+    """
+
+    def __init__(self) -> None:
+        self.files: dict[str, list[Any]] = {}
+        self.event_count = 0
+
+    def add(self, event: Event) -> None:
+        self.event_count += 1
+        path = str(event.get("file_path") or "")
+        record = self.files.get(path)
+        if record is None:
+            # times[4], size, uid, raw, source_path, event_count, flagged events
+            record = [
+                ["", "", "", ""],
+                _extra(event, "size"),
+                _text(event.get("uid")),
+                _text(event.get("raw")),
+                _text(event.get("source_path")),
+                0,
+                None,
+            ]
+            self.files[path] = record
+        slot = FILE_ACTIONS[str(event.get("event_action"))]
+        record[0][slot] = max(record[0][slot], _time(event))
+        record[5] += 1
+        if _score(event) != NONE:
+            if record[6] is None:
+                record[6] = []
+            if len(record[6]) < MAX_FLAGGED_EVENTS_PER_FILE:
+                record[6].append(_public_event(event))
+
+    def rows(self, limit: int) -> tuple[list[dict[str, Any]], int]:
+        flagged = sorted(path for path, record in self.files.items() if record[6])
+        room = max(0, limit - len(flagged))
+        plain = sorted(path for path, record in self.files.items() if not record[6])
+        chosen = sorted(flagged[:limit] + plain[:room])
+        rows = []
+        for path in chosen:
+            times, size, uid, raw, source_path, count, events = self.files[path]
+            events = events or []
+            score = max(
+                (event["score"] for event in events),
+                key=lambda s: SCORE_RANK[s],
+                default=NONE,
+            )
+            rows.append(
+                {
+                    "cells": [_text(path), *times, size, uid],
+                    "score": score,
+                    "why": list(dict.fromkeys(event["summary"] for event in events)),
+                    "event_count": count,
+                    "events": events
+                    or [
+                        {
+                            "event_id": "",
+                            "timestamp": max(times),
+                            "severity": "informational",
+                            "score": NONE,
+                            "summary": f"File timestamps for {_text(path)}",
+                            "raw": raw,
+                            "source_path": source_path,
+                            "source_type": "bodyfile",
+                            "host": "",
+                            "detections": "",
+                            "mitre": "",
+                        }
+                    ],
+                    "sort": path,
+                }
+            )
+        return rows, len(self.files) - len(chosen)
 
 
 def _connection_cells(event: Event) -> list[str]:
@@ -443,11 +507,11 @@ CATEGORIES: tuple[Category, ...] = (
         "files",
         "User",
         "File Activity",
-        "Files with recorded timestamps, one row per path.",
-        ("Path", "Modified", "Accessed", "Changed", "Size", "UID"),
+        "Files with recorded timestamps, one row per path, ordered by path.",
+        ("Path", "Modified", "Accessed", "Changed", "Created", "Size", "UID"),
         (0,),
         lambda e: e.get("event_action") in FILE_ACTIONS,
-        _grouped(lambda e: str(e.get("file_path") or ""), _file_cells),
+        lambda events: [],
     ),
     Category(
         "processes",
@@ -633,23 +697,51 @@ def _public_row(row: Row) -> dict[str, Any]:
     }
 
 
+def _category_payload(
+    category: Category, rows: list[dict[str, Any]], event_count: int, truncated: int
+) -> dict[str, Any]:
+    return {
+        "id": category.id,
+        "group": category.group,
+        "name": category.name,
+        "description": category.description,
+        "columns": list(category.columns),
+        "mono": list(category.mono),
+        "rows": rows,
+        "event_count": event_count,
+        "notable": sum(row["score"] == NOTABLE for row in rows),
+        "likely": sum(row["score"] == LIKELY for row in rows),
+        "truncated_rows": truncated,
+    }
+
+
 def build_artifact_view(events: Iterable[Event]) -> dict[str, Any]:
     """Classify events into categories; the first matching category wins."""
     buckets: dict[str, list[Event]] = {category.id: [] for category in CATEGORIES}
     buckets[OTHER.id] = []
     hosts: dict[str, int] = {}
+    files = FileActivity()
     total = 0
     for event in events:
         total += 1
         host = str(event.get("host") or "")
         if host:
             hosts[host] = hosts.get(host, 0) + 1
+        if event.get("event_action") in FILE_ACTIONS and not _integrity(event):
+            files.add(event)
+            continue
         target = next((c.id for c in CATEGORIES if c.matches(event)), OTHER.id)
         buckets[target].append(event)
     by_id = {category.id: category for category in (*CATEGORIES, OTHER)}
     categories = []
     for category_id in DISPLAY_ORDER:
         category = by_id[category_id]
+        if category_id == "files":
+            rows, truncated = files.rows(MAX_ROWS_PER_CATEGORY)
+            categories.append(
+                _category_payload(category, rows, files.event_count, truncated)
+            )
+            continue
         rows = [_public_row(row) for row in category.build(buckets[category_id])]
         rows.sort(key=lambda row: row["sort"])
         truncated = max(0, len(rows) - MAX_ROWS_PER_CATEGORY)
@@ -659,19 +751,7 @@ def build_artifact_view(events: Iterable[Event]) -> dict[str, Any]:
             rows = (flagged_rows + rest)[:MAX_ROWS_PER_CATEGORY]
             rows.sort(key=lambda row: row["sort"])
         categories.append(
-            {
-                "id": category.id,
-                "group": category.group,
-                "name": category.name,
-                "description": category.description,
-                "columns": list(category.columns),
-                "mono": list(category.mono),
-                "rows": rows,
-                "event_count": len(buckets[category_id]),
-                "notable": sum(row["score"] == NOTABLE for row in rows),
-                "likely": sum(row["score"] == LIKELY for row in rows),
-                "truncated_rows": truncated,
-            }
+            _category_payload(category, rows, len(buckets[category_id]), truncated)
         )
     return {
         "schema": "tq_ext.artifact_view/1",
