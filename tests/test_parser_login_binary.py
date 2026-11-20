@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tq_ext.parsers import utmp
 from uac_parser.loaders.uac_layout import discover_sources
-from uac_parser.parsers import utmp
 from uac_parser.pipeline import run_pipeline
 
 T0 = 1_772_356_500  # 2026-03-01T09:15:00Z

@@ -669,6 +669,9 @@ Current coverage is tuned for Linux intrusion triage:
 - Log integrity: zero-filled login records, timestamps that run backwards in
   append-only login databases, truncated login databases, and journal files with
   damaged objects or fewer recoverable entries than the header declares
+- Cross-source integrity: lastlog logins with no wtmp record, wtmp logins with
+  no authentication log entry, silences in busy logs that no boot or shutdown
+  explains, and journal sequence gaps (see `tq_ext/README.md`)
 
 - Authentication: SSH brute force, invalid users, successful login after repeated
   failures, root logins, login-history exports, account lock/unlock events, and

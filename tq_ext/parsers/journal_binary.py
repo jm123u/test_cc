@@ -21,9 +21,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from uac_parser.parsers.journal import _classify
 from uac_parser.timeline.event import TimelineEvent
-
-from .journal import _classify
 
 SIGNATURE = b"LPKSHHRH"
 HEADER_MIN_SIZE = 208
@@ -224,6 +223,7 @@ class JournalReader:
                 f"Unsupported journal incompatible flags: 0x{incompatible:x}"
             )
         self.compact = bool(incompatible & INCOMPATIBLE_COMPACT)
+        self.seqnum_id = bytes(buffer[72:88]).hex()
         self.header_size = U64.unpack_from(buffer, 88)[0]
         arena_size = U64.unpack_from(buffer, 96)[0]
         if self.header_size < HEADER_MIN_SIZE or self.header_size > self.size:
@@ -341,6 +341,7 @@ def _event(
     realtime: int,
     boot_id: bytes,
     fields: dict[str, str],
+    seqnum_id: str = "",
 ) -> TimelineEvent:
     timestamp = _iso(realtime)
     message = fields.get("MESSAGE") or "(journal entry without MESSAGE field)"
@@ -358,6 +359,7 @@ def _event(
         "entry_offset": offset,
         "seqnum": seqnum,
         "entry_boot_id": boot_id.hex(),
+        "seqnum_id": seqnum_id,
     }
     for name, key in EXTRA_FIELDS.items():
         value = fields.get(name)
@@ -463,7 +465,16 @@ def parse(path: Path, relative: str, host: str = "") -> list[TimelineEvent]:
             if "MESSAGE" not in fields:
                 reader.stats.entries_without_message += 1
             events.append(
-                _event(relative, host, offset, seqnum, realtime, boot_id, fields)
+                _event(
+                    relative,
+                    host,
+                    offset,
+                    seqnum,
+                    realtime,
+                    boot_id,
+                    fields,
+                    reader.seqnum_id,
+                )
             )
         stats = reader.stats
     if (

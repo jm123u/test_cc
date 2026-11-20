@@ -15,6 +15,8 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from tq_ext.registry import parsers as extension_parsers
+from tq_ext.registry import post_parse as extension_post_parse
 from uac_parser import __version__
 from uac_parser.assist import (
     append_assisted_summary,
@@ -52,13 +54,11 @@ from uac_parser.parsers import (
     auth,
     bodyfile,
     journal,
-    journal_binary,
     persistence,
     privilege,
     sqlite_log,
     ssh,
     syslog,
-    utmp,
 )
 from uac_parser.parsers.account_diff import diff_accounts
 from uac_parser.parsers.common import UnsupportedCompressionError
@@ -96,11 +96,9 @@ PARSER_DISPATCH = {
     "package_log": parse_package_log,
     "systemd": parse_systemd,
     "journal_text": journal.parse,
-    "journal_binary": journal_binary.parse,
     "systemd_unit": persistence.parse_systemd_unit,
     "web_log": parse_web_log,
     "login_history": parse_last_output,
-    "login_binary": utmp.parse,
     "passwd": accounts.parse_passwd,
     "shadow": accounts.parse_shadow,
     "group": accounts.parse_group,
@@ -118,6 +116,8 @@ PARSER_DISPATCH = {
     "ps_output": parse_ps,
     "sqlite_log": sqlite_log.parse,
 }
+# Decoders and checks maintained separately in tq_ext (see tq_ext/README.md).
+PARSER_DISPATCH.update(extension_parsers())
 
 
 @dataclass(frozen=True)
@@ -1002,6 +1002,9 @@ def _run_collection(
             events.extend(diff_events)
         except Exception as exc:
             parser_errors.append(f"account_diff: {type(exc).__name__}: {exc}")
+        events.extend(
+            _extension_events(events, sources, host, evidence_hashes, parser_errors)
+        )
         acquisition_time = _collection_acquisition_time(input_path, timezone_name)
         _emit_progress(
             progress_callback,
@@ -1222,6 +1225,22 @@ def _parse_source(
         )
         for event in parsed
     ]
+
+
+def _extension_events(
+    events: list[TimelineEvent],
+    sources: list[SourceFile],
+    host: str,
+    evidence_hashes: dict[str, str],
+    parser_errors: list[str],
+) -> list[TimelineEvent]:
+    """Collect events derived by the separately maintained tq_ext package."""
+    try:
+        derived = extension_post_parse(events, sources, host=host)
+        return _attach_derived_provenance(derived, evidence_hashes)
+    except Exception as exc:
+        parser_errors.append(f"tq_ext: {type(exc).__name__}: {exc}")
+        return []
 
 
 def _attach_derived_provenance(

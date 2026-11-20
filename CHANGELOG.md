@@ -21,6 +21,11 @@ All notable TraceQuarry changes are documented here. The project follows
 - Added an artifact view (`/artifacts`) that groups a parsed timeline by
   evidence category with per-category flagged counts. It lives in the separate
   `tq_ext` package and reads existing timeline output without changing it.
+- Added cross-source log integrity checks: lastlog logins missing from wtmp,
+  wtmp logins missing from the authentication log, unexplained silences in
+  busy logs, and journal sequence gaps.
+- Moved the native journal and login-database decoders into `tq_ext`; the
+  upstream pipeline now reaches them through a parser registration call.
 
 ## [0.4.0-beta.2] - 2026-07-26
 

@@ -25,9 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
 
-from uac_parser.timeline.event import TimelineEvent
-
-from .common import (
+from uac_parser.parsers.common import (
     BZ2_MAGIC,
     GZIP_MAGIC,
     LZ4_MAGIC,
@@ -35,6 +33,7 @@ from .common import (
     ZSTD_MAGIC,
     UnsupportedCompressionError,
 )
+from uac_parser.timeline.event import TimelineEvent
 
 EMPTY, RUN_LVL, BOOT_TIME, NEW_TIME, OLD_TIME = 0, 1, 2, 3, 4
 INIT_PROCESS, LOGIN_PROCESS, USER_PROCESS, DEAD_PROCESS, ACCOUNTING = 5, 6, 7, 8, 9

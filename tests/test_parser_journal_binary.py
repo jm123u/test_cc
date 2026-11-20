@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.journal_fixture import JournalBuilder, lz4_literal_block
-from uac_parser.parsers import journal_binary
+from tq_ext.parsers import journal_binary
 from uac_parser.pipeline import run_pipeline
 
 BASE = 1_772_356_500_000_000  # 2026-03-01T09:15:00Z
