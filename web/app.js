@@ -791,6 +791,7 @@
         briefingExport.href = `${reviewCsvUrl}&summary=selected`;
       }
       if (job.id) {
+        document.getElementById('open-artifacts').href = `/artifacts?job=${encodeURIComponent(job.id)}`;
         const workbookUrl = investigationWorkbookUrl('full');
         exportWorkbook.href = workbookUrl;
         summaryWorkbook.href = workbookUrl;

@@ -23,6 +23,7 @@ from typing import Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from tq_ext.web_routes import handle_get as extension_get
 from uac_parser import __version__
 from uac_parser.analyst_audit import audit_status
 from uac_parser.assist import profile_choices
@@ -745,7 +746,22 @@ class UacWebHandler(BaseHTTPRequestHandler):
             return
         if self._handle_static_get(parsed.path):
             return
+        if self._handle_extension_get(parsed.path):
+            return
         self.send_error(404)
+
+    def _handle_extension_get(self, path: str) -> bool:
+        """Serve read-only routes owned by the separately maintained tq_ext package."""
+        response = extension_get(path, _job_output_dir)
+        if response is None:
+            return False
+        self.send_response(response.status)
+        self.send_header("Content-Type", response.content_type)
+        self.send_header("Content-Length", str(len(response.body)))
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.end_headers()
+        self.wfile.write(response.body)
+        return True
 
     def _handle_service_get(self, path: str) -> bool:
         """Serve health, collection, upload-session, and job status resources."""

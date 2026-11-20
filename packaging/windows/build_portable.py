@@ -193,7 +193,7 @@ def build(out_dir: Path, nupkg: Path | None, verify: bool) -> Path:
     # 3. Application.
     app = stage / "app"
     app.mkdir()
-    for name in ("uac_parser", "rules", "assets", "web"):
+    for name in ("uac_parser", "tq_ext", "rules", "assets", "web"):
         copy_tree(ROOT / name, app / name)
     for name in ("launcher.py", "cli.py"):
         shutil.copy2(HERE / name, app / name)

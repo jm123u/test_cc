@@ -10,6 +10,7 @@ WORKDIR /build
 
 COPY pyproject.toml README.md LICENSE NOTICE OWNERSHIP.md requirements.txt ./
 COPY uac_parser ./uac_parser
+COPY tq_ext ./tq_ext
 COPY rules ./rules
 COPY assets ./assets
 COPY web ./web

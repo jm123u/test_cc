@@ -18,6 +18,9 @@ All notable TraceQuarry changes are documented here. The project follows
   regressions, and truncated trailing records.
 - Added a self-contained Windows portable bundle build under
   `packaging/windows`.
+- Added an artifact view (`/artifacts`) that groups a parsed timeline by
+  evidence category with per-category flagged counts. It lives in the separate
+  `tq_ext` package and reads existing timeline output without changing it.
 
 ## [0.4.0-beta.2] - 2026-07-26
 
